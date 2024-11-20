@@ -1,0 +1,210 @@
+---
+title: "Machine Learning Project Code"
+author: "Lucas Saigh Sucar e Bernardez"
+date: "2024-10-03"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(caret)
+library(ggplot2)
+library(corrplot)
+library(ROSE)
+library(randomForest)
+library(xgboost)
+library(MLmetrics)
+
+data <- read.csv("Telecom-churn-data.csv")
+```
+
+```{r}
+data$TotalCharges <- as.numeric(as.character(data$TotalCharges))
+data <- data %>% drop_na(TotalCharges)
+
+data$gender <- as.factor(data$gender)
+data$SeniorCitizen <- as.factor(data$SeniorCitizen)
+data$Partner <- as.factor(data$Partner)
+data$Dependents <- as.factor(data$Dependents)
+data$PhoneService <- as.factor(data$PhoneService)
+data$MultipleLines <- as.factor(data$MultipleLines)
+data$InternetService <- as.factor(data$InternetService)
+data$OnlineSecurity <- as.factor(data$OnlineSecurity)
+data$OnlineBackup <- as.factor(data$OnlineBackup)
+data$DeviceProtection <- as.factor(data$DeviceProtection)
+data$TechSupport <- as.factor(data$TechSupport)
+data$StreamingTV <- as.factor(data$StreamingTV)
+data$StreamingMovies <- as.factor(data$StreamingMovies)
+data$Contract <- as.factor(data$Contract)
+data$PaperlessBilling <- as.factor(data$PaperlessBilling)
+data$PaymentMethod <- as.factor(data$PaymentMethod)
+data$Churn <- as.factor(data$Churn)
+
+sum(is.na(data))
+```
+
+```{r}
+ggplot(data, aes(x=Churn)) + 
+  geom_bar(fill="blue") + 
+  ggtitle("Distribution of Churned vs Non-Churned Customers") +
+  xlab("Churn") + 
+  ylab("Count")
+
+ggplot(data, aes(x=Churn, y=tenure)) + 
+  geom_boxplot(aes(fill=Churn)) + 
+  ggtitle("Customer Tenure by Churn Status") + 
+  xlab("Churn") + 
+  ylab("Tenure (Months)")
+
+ggplot(data, aes(x=Contract, fill=Churn)) + 
+  geom_bar(position="dodge") + 
+  ggtitle("Churn Rate by Contract Type") +
+  xlab("Contract Type") + 
+  ylab("Count")
+```
+
+```{r}
+numeric_vars <- data %>% select(tenure, MonthlyCharges, TotalCharges)
+cor_matrix <- cor(numeric_vars, use="complete.obs")
+corrplot::corrplot(cor_matrix, method="circle", title = "Correlation between Numerical Variables")
+```
+
+```{r}
+set.seed(123)
+trainIndex <- createDataPartition(data$Churn, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+trainData <- data[trainIndex,]
+testData  <- data[-trainIndex,]
+
+trainData_balanced <- ovun.sample(Churn ~ ., data = trainData, method = "over", N = nrow(trainData))$data
+
+full_data <- rbind(trainData_balanced, testData)
+full_data_matrix <- model.matrix(Churn ~ ., data = full_data)[, -1]
+
+train_matrix <- full_data_matrix[1:nrow(trainData_balanced), ]
+test_matrix <- full_data_matrix[(nrow(trainData_balanced) + 1):nrow(full_data), ]
+
+train_label <- ifelse(trainData_balanced$Churn == "Yes", 1, 0)
+test_label <- ifelse(testData$Churn == "Yes", 1, 0)
+```
+
+```{r}
+logistic_model <- glm(Churn ~ tenure + MonthlyCharges + TotalCharges + Contract + PaymentMethod, 
+                      data=trainData_balanced, family="binomial")
+logistic_predictions <- predict(logistic_model, testData, type="response")
+logistic_pred_class <- ifelse(logistic_predictions > 0.5, "Yes", "No")
+logistic_cm <- confusionMatrix(as.factor(logistic_pred_class), testData$Churn)
+```
+
+```{r}
+set.seed(123)
+rf_model <- randomForest(Churn ~ ., data = trainData_balanced, importance = TRUE)
+rf_predictions <- predict(rf_model, testData)
+rf_cm <- confusionMatrix(rf_predictions, testData$Churn)
+```
+
+```{r}
+xgb_model <- xgboost(data = train_matrix, label = train_label, 
+                     nrounds = 100, objective = "binary:logistic", 
+                     scale_pos_weight = sum(train_label == 0) / sum(train_label == 1))
+
+xgb_predictions <- predict(xgb_model, test_matrix)
+xgb_pred_class <- ifelse(xgb_predictions > 0.5, "Yes", "No")
+
+xgb_cm <- confusionMatrix(as.factor(xgb_pred_class), as.factor(testData$Churn))
+```
+
+```{r}
+logistic_accuracy <- logistic_cm$overall["Accuracy"]
+rf_accuracy <- rf_cm$overall["Accuracy"]
+xgb_accuracy <- xgb_cm$overall["Accuracy"]
+
+logistic_f1 <- logistic_cm$byClass["F1"]
+rf_f1 <- rf_cm$byClass["F1"]
+xgb_f1 <- xgb_cm$byClass["F1"]
+```
+
+```{r}
+print(paste("Logistic Regression Accuracy:", logistic_accuracy))
+print(paste("Random Forest Accuracy:", rf_accuracy))
+print(paste("XGBoost Accuracy:", xgb_accuracy))
+
+print(paste("Logistic Regression F1 Score:", logistic_f1))
+print(paste("Random Forest F1 Score:", rf_f1))
+print(paste("XGBoost F1 Score:", xgb_f1))
+```
+
+```{r}
+logistic_coef <- summary(logistic_model)$coefficients
+
+logistic_coef_df <- data.frame(Feature = rownames(logistic_coef), Coefficient = logistic_coef[,1])
+
+logistic_coef_df <- logistic_coef_df[logistic_coef_df$Feature != "(Intercept)", ]
+
+logistic_coef_df$AbsCoefficient <- abs(logistic_coef_df$Coefficient)
+
+top_logistic_features <- logistic_coef_df %>% arrange(desc(AbsCoefficient)) %>% head(10)
+
+ggplot(top_logistic_features, aes(x = reorder(Feature, AbsCoefficient), y = AbsCoefficient)) + 
+  geom_bar(stat = "identity", fill = "steelblue") + 
+  coord_flip() + 
+  ggtitle("Top 10 Important Features - Logistic Regression") + 
+  xlab("Features") + 
+  ylab("Absolute Coefficient") + 
+  theme_minimal()
+```
+
+
+```{r}
+rf_importance <- importance(rf_model)
+
+rf_importance_df <- data.frame(Feature = rownames(rf_importance), Importance = rf_importance[,1])
+
+top_rf_importance <- rf_importance_df %>% arrange(desc(Importance)) %>% head(10)
+
+ggplot(top_rf_importance, aes(x = reorder(Feature, Importance), y = Importance)) + 
+  geom_bar(stat = "identity", fill = "steelblue") + 
+  coord_flip() + 
+  ggtitle("Top 10 Important Features - Random Forest") + 
+  xlab("Features") + 
+  ylab("Importance") + 
+  theme_minimal()
+```
+```{r}
+xgb_importance <- xgb.importance(model = xgb_model)
+
+xgb.plot.importance(xgb_importance[1:10,], 
+                    main = "Top 10 Important Features - XGBoost", 
+                    rel_to_first = TRUE)
+```
+
+```{r}
+model_performance <- data.frame(
+  Model = c("Logistic Regression", "Random Forest", "XGBoost"),
+  Accuracy = c(logistic_accuracy, rf_accuracy, xgb_accuracy),
+  F1_Score = c(logistic_f1, rf_f1, xgb_f1)
+)
+
+ggplot(model_performance, aes(x = Model, y = Accuracy)) + 
+  geom_bar(stat = "identity", fill = "steelblue") + 
+  ggtitle("Model Accuracy Comparison") +
+  xlab("Model") + 
+  ylab("Accuracy") + 
+  geom_text(aes(label = round(Accuracy, 2)), vjust = 1.5, color = "white", size = 5)
+
+ggplot(model_performance, aes(x = Model, y = F1_Score)) + 
+  geom_bar(stat = "identity", fill = "darkorange") + 
+  ggtitle("Model F1 Score Comparison") +
+  xlab("Model") + 
+  ylab("F1 Score") + 
+  geom_text(aes(label = round(F1_Score, 2)), vjust = 1.5, color = "white", size = 5)
+
+```
+
